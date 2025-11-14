@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+#
+# txfetch - Um script aprimorado para exibir informações do sistema.
+#
+# VERSÃO: 2.0
+#
+# MELHORIAS DESTA VERSÃO:
+# - Estrutura com função `main` para melhor organização.
+# - Funções de coleta de dados agora retornam valores em vez de modificar
+#   variáveis globais, melhorando o encapsulamento.
+# - Loop de exibição dinâmico, facilitando a adição de novas informações.
+# - Verificações de robustez para comandos essenciais (ex: free, uptime).
+# - Comentários e documentação aprimorados.
+#
+
+# --- Constantes e Configurações --- 
+
+# Códigos de Cores ANSI para formatação da saída
+readonly logo_color="\033[1;34m" # Azul brilhante
+readonly key_color="\033[0;34m"   # Azul brilhante
+readonly info_color="\033[0;37m"  # Branco
+readonly reset="\033[0m"          # Reseta a formatação de cor
+
+# --- Funções de Coleta de Dados ---
+# Cada função é responsável por obter uma única informação e imprimi-la
+# na saída padrão (stdout), para ser capturada posteriormente.
+
+# Obtém o modelo do dispositivo (híbrido para Android/Linux)
+get_device_model() {
+    # Lógica para Android via getprop
+    if command -v getprop &>/dev/null; then
+        local brand model
+        brand=$(getprop ro.product.brand)
+        model=$(getprop ro.product.model)
+        # Formata a primeira letra da marca para maiúscula
+        brand=$(echo "$brand" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')
+        echo "$brand $model"
+        return
+    fi
+
+    # Lógica para Linux PC via DMI
+    if [[ -r /sys/class/dmi/id/product_name ]]; then
+        local product_name
+        product_name=$(< /sys/class/dmi/id/product_name)
+
+        if [[ -n "$product_name" && "$product_name" != "System Product Name" ]]; then
+            echo "$product_name"
+            return
+        fi
+    fi
+
+    # Alternativa final: usar o hostname
+    hostname
+}
+
+# Obtém o tempo de atividade do sistema (uptime)
+get_uptime() {
+    if command -v uptime &>/dev/null; then
+        uptime -p | sed 's/up //'
+    else
+        echo "Indisponível"
+    fi
+}
+
+# Obtém o nome do shell do usuário atual
+get_shell() {
+    # A variável $SHELL é quase sempre definida, mas basename garante apenas o nome do executável
+    if [[ -n "$SHELL" ]]; then
+        basename "$SHELL"
+    else
+        echo "Indisponível"
+    fi
+}
+
+# Obtém o Sistema Operacional e a Arquitetura
+get_os_arch() {
+    local os_name arch
+    
+    # Detecta o OS (híbrido para Android/Linux)
+    if command -v getprop &>/dev/null; then
+        os_name="Android $(getprop ro.build.version.release)"
+    elif [[ -f /etc/os-release ]]; then
+        # shellcheck source=/dev/null
+        . /etc/os-release
+        os_name="${NAME:-$(uname -s)}" # Usa o nome do /etc/os-release ou uname como fallback
+        [[ -n "$VERSION_ID" ]] && os_name+=" $VERSION_ID"
+    else
+        os_name=$(uname -s) # Alternativa final
+    fi
+
+    # Arquitetura é universal via uname
+    arch=$(uname -m)
+
+    echo "$os_name $arch"
+}
+
+# Obtém o uso de memória RAM
+get_ram() {
+    if ! command -v free &>/dev/null; then
+        echo "Indisponível (free não encontrado)"
+        return
+    fi
+
+    # Usando awk para calcular e formatar. Adicionado tratamento para caso 'Mem' não seja encontrado.
+    free -m | awk '
+        /^Mem/ {
+            used = $3;
+            total = $2;
+            if (total > 0) {
+                percent = int(used / total * 100);
+                printf "%dMiB / %dMiB (%d%%)", used, total, percent;
+            } else {
+                printf "0MiB / 0MiB (0%%)";
+            }
+            exit; # Sai após encontrar a linha 'Mem'
+        }
+        END {
+            # Se o script chegar aqui, a linha 'Mem' não foi encontrada.
+            if (!used) {
+                print "Não foi possível calcular";
+            }
+        }
+    '
+}
+
+
+# --- Funções de Exibição ---
+
+# Exibe a paleta de cores padrão e brilhante do terminal
+display_palette() {
+    local std_colors=""
+    local bright_colors=""
+    local i
+
+    for i in {0..7}; do
+        std_colors+="\033[3${i}m× "
+        bright_colors+="\033[9${i}m+ "
+    done
+
+    printf "  %b\n" "${std_colors}${bright_colors}${reset}"
+}
+
+# --- Função Principal de Execução ---
+# Orquestra a coleta de dados e a exibição formatada.
+
+main() {
+    # Define a arte ASCII para o logo
+    local -a logo_art=(
+        "  ██  ██    ██"
+        "██████████  ██"
+        "  ██  ██    ██"
+        "██████████    "
+        "  ██  ██    ██"
+    )
+
+    # Coleta todas as informações ANTES de começar a imprimir
+    # As chaves (rótulos) e os valores são armazenados em arrays separados.
+    local -a info_keys=(
+        "Dispositivo"
+        "Em atividade" 
+        "Shell"
+        "Sistema"
+        "RAM"
+    )
+    local -a info_values=(
+        "$(get_device_model)"
+        "$(get_uptime)"
+        "$(get_shell)"
+        "$(get_os_arch)"
+        "$(get_ram)"
+    )
+
+    # --- Imprimindo a saída formatada ---
+    echo # Espaçamento inicial
+
+    # O loop itera pelo número de linhas da logo.
+    # Isso garante que não tentaremos imprimir mais linhas de informação do que temos de logo.
+    for i in "${!logo_art[@]}"; do
+        # Verifica se existe uma informação correspondente para a linha atual do logo
+        if [[ -v "info_keys[i]" ]]; then
+            # Imprime a linha do logo e a informação correspondente lado a lado
+            # O padding (ex: %-12s) garante o alinhamento vertical 
+            printf " ${logo_color}%-10s${reset}  ${key_color}%-12s${info_color} | %s${reset}\n" \
+                "${logo_art[$i]}" \
+                "${info_keys[i]}" \
+                "${info_values[i]}"
+        else
+            # Se não houver mais informações, imprime apenas a linha do logo
+            printf " ${logo_color}%-10s${reset}\n" "${logo_art[$i]}"
+        fi
+    done
+
+    echo # Espaçamento
+    display_palette
+    echo # Espaçamento final
+}
+
+# --- Ponto de Entrada do Script ---
+# Chama a função principal, passando quaisquer argumentos de linha de comando
+# que o script possa ter recebido (útil para expansões futuras).
+main "$@"
